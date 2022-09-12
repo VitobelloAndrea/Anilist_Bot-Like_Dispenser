@@ -4,9 +4,19 @@ client_redirectURL = "xxx"
 client_ID = 000
 client_Secret = "xxx"
 
+##################### METHOD: CHECK LIMIT RATE - if the number of remaining requests is equal to 1 or less, than wait 60 seconds
+# to avoid incurring in any penalities (https://anilist.gitbook.io/anilist-apiv2-docs/overview/rate-limiting)
+# PARAMETERS: response - response to a message that includes the rate limit fields among the headers
+def checkRateLimit(response) :
+    if int(response.headers["X-RateLimit-Remaining"]) <= 1 :
+        import time
+        print("oh shit, taking a pause cause I've almost finished the requests for this minute")
+        time.sleep(60)
 
 
 ##################### METHOD: GETTING A PAGE (actually a post message)
+# PARAMETERS: getNumber, number of the page to be retrieved; token, necessary to identify the client
+# RETURNS: list of activities, 50 by default; empty list of the page retrieval was not successful
 def getPage(pageNumber, token) :
     import requests
     uri = 'https://graphql.anilist.co'
@@ -40,16 +50,22 @@ def getPage(pageNumber, token) :
     else :
         print(pageResponse.text)
 
+    #Rate Limiting check!
+    checkRateLimit(pageResponse)
+
     import json
-    activities = pageResponse.json()['data']['Page']['activities']
-
-    #print(type(activities[0]))
-    #print(activities[0])
-
-    return activities
+    activities = pageResponse.json()
+    if ('data' not in activities
+        or 'Page' not in activities['data'] 
+        or 'activities' not in activities['data']['Page']):
+        return []
+    else :
+        return activities['data']['Page']['activities']
 
 
 ##################### METHOD: MAKE THE ACTIVITY POST REQUEST
+# PARAMETERS: activityNumber, which uniquely identifies the activity, and the token code, necessary for the post request to be identified
+# RETURN: True if the post is successful; False if the post is unsuccessful
 def postLike(activityNumber, token) :
     import requests
     uri = 'https://graphql.anilist.co'
@@ -79,10 +95,15 @@ def postLike(activityNumber, token) :
     }
 
     response = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzz)
+    
+    #Rate limiting check!
+    checkRateLimit(response)
     if response.status_code == 200:
         print("response : ", response)
+        return True
     else :
         print(response.text)
+        return False
     #just to check: webbrowser.open_new_tab("https://anilist.co/activity/" + str(activityNumber))
 
 
@@ -142,12 +163,15 @@ def postActivities(token) :
     likeCounter = 0 #count how many likes; maximum of 30 before 1minute time out
     listCounter = 0 #count the activity of the list that was reached (0 up to 49)
     continueFlag = True
+    likes = 0
 
     with open('lastDate.txt', 'r') as file: # extracting the activity epoch up to which the algorithm has run
         data = file.read().rstrip()
     epochToReach = int(data) # and converting it to integer
 
     activities = getPage(pageCounter, token)
+    while (len(activities) == 0) :
+        activities = getPage(pageCounter, token)
     pageCounter += 1
     startingEpoch = activities[0].get('createdAt') #getting epoch of the most recent activity
 
@@ -158,8 +182,13 @@ def postActivities(token) :
                 continueFlag = False
             elif (likeCounter < 30) :
                 if (not(activity.get('isLiked'))) :
-                    postLike(int(activity.get('id')), token)
-                    likeCounter += 1
+                    successful = postLike(int(activity.get('id')), token)
+                    if (successful) :
+                        likeCounter += 1
+                        likes += 1
+                    else : 
+                        time.sleep(60)
+                        listCounter -= 1
                 listCounter += 1
             else :
                 time.sleep(60)
@@ -167,10 +196,14 @@ def postActivities(token) :
         if (continueFlag) : 
             listCounter = 0
             activities = getPage(pageCounter, token)
+            while (len(activities) == 0) :
+                activities = getPage(pageCounter, token)
             pageCounter += 1
 
     with open('lastDate.txt', "w") as file:
         file.write(str(startingEpoch))
+    
+    print(likes)
 
 
 ############### MAIN -> ffs I don't like the __main__
