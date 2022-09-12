@@ -4,6 +4,7 @@ client_redirectURL = "xxx"
 client_ID = 000
 client_Secret = "xxx"
 
+
 ##################### METHOD: CHECK LIMIT RATE - if the number of remaining requests is equal to 1 or less, than wait 60 seconds
 # to avoid incurring in any penalities (https://anilist.gitbook.io/anilist-apiv2-docs/overview/rate-limiting)
 # PARAMETERS: response - response to a message that includes the rate limit fields among the headers
