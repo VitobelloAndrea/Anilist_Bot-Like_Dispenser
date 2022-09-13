@@ -18,7 +18,8 @@ def checkRateLimit(response) :
 ##################### METHOD: GETTING A PAGE (actually a post message)
 # PARAMETERS: getNumber, number of the page to be retrieved; token, necessary to identify the client
 # RETURNS: list of activities, 50 by default; empty list of the page retrieval was not successful
-def getPage(pageNumber, token) :
+# NOTICE: the page can either be a default followed page or a global list page (maybe a user page too in the near future)
+def getPage(pageNumber, token, mode, targetUser) :
     import requests
     uri = 'https://graphql.anilist.co'
 
@@ -39,11 +40,24 @@ def getPage(pageNumber, token) :
     }
     '''
 
-    variables = {
-        'page': pageNumber, 
-        'type': "following", 
-        'filter': "all"
-    }
+    #selecting variables depending on the mode the algorithm is running on
+    if mode == 0: #mode = 0 -> default
+        variables = {
+            'page': pageNumber, 
+            'type': "following", 
+            'filter': "all"
+        }
+    elif mode == 1: #mode = 1 -> global
+        variables = {
+            'page': 1, 
+            'type': 'global', 
+            'filter': 'all', 
+            'isFollowing': False, 
+            'hasReplies': True
+        }
+    elif mode == 2: #mode = 2 -> target user
+        #TODO
+        print("todo todo todo")
 
     pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
     if pageResponse.status_code == 200:
@@ -99,7 +113,7 @@ def postLike(activityNumber, token) :
     
     #Rate limiting check!
     checkRateLimit(response)
-    if response.status_code == 200:
+    if response.status_code == 200 or response.status_code == 404: #if everything was alright or the activity was deleted
         print("response : ", response)
         return True
     else :
@@ -157,29 +171,47 @@ def getAccessToken(code) :
     return token
 
 
-############### METHOD: TIME TO ITERATE! 
-def postActivities(token) :
+############### METHOD: TIME TO ITERATE!
+# mode: tells the operation mode;
+# mode = 0 -> followed list mode; likes are posted until a certain time epoch is reached.
+# mode = 1 -> global list mode; a predetermined quantity of likes is posted.
+# mode = 1 -> a predetermined quantity of likes is posted to a certain user.
+def postActivities(token, mode, targetUser) :
     import time
     pageCounter = 1
     likeCounter = 0 #count how many likes; maximum of 30 before 1minute time out
     listCounter = 0 #count the activity of the list that was reached (0 up to 49)
-    continueFlag = True
     likes = 0
 
-    with open('lastDate.txt', 'r') as file: # extracting the activity epoch up to which the algorithm has run
-        data = file.read().rstrip()
-    epochToReach = int(data) # and converting it to integer
+    if mode == 0 :
+        continueFlag = True #MODE 0 variable necessary to determine for how long to continue
+        with open('lastDate.txt', 'r') as file: # extracting the activity epoch up to which the algorithm has run
+            data = file.read().rstrip()
+        epochToReach = int(data) # and converting it to integer
+    elif mode == 1 :
+        continueFlag = input("Enter the number of activities to like (max50): ") #MODE 1 variable
+        try :
+            continueFlag = int(continueFlag)
+        except ValueError:
+            print("wrong input")
+            return
+        if continueFlag > 50: 
+            continueFlag = 50
 
-    activities = getPage(pageCounter, token)
+    activities = getPage(pageCounter, token, mode, targetUser)
     while (len(activities) == 0) :
-        activities = getPage(pageCounter, token)
+        activities = getPage(pageCounter, token, mode, targetUser)
     pageCounter += 1
-    startingEpoch = activities[0].get('createdAt') #getting epoch of the most recent activity
+
+    if mode == 0 :
+        startingEpoch = activities[0].get('createdAt') #getting epoch of the most recent activity
+    elif mode == 1:
+        pageCounter = 0
 
     while (continueFlag and pageCounter < 100) :
-        while (listCounter < 50 and continueFlag) :
+        while (listCounter < len(activities) and continueFlag) :
             activity = activities[listCounter]
-            if (activity.get('createdAt') < epochToReach) :
+            if ((mode == 0 and activity.get('createdAt') < epochToReach)) : #or (mode == 1 and not(continueFlag))
                 continueFlag = False
             elif (likeCounter < 30) :
                 if (not(activity.get('isLiked'))) :
@@ -187,6 +219,8 @@ def postActivities(token) :
                     if (successful) :
                         likeCounter += 1
                         likes += 1
+                        if mode == 1:
+                            continueFlag -= 1
                     else : 
                         time.sleep(60)
                         listCounter -= 1
@@ -196,22 +230,92 @@ def postActivities(token) :
                 likeCounter = 0
         if (continueFlag) : 
             listCounter = 0
-            activities = getPage(pageCounter, token)
+            activities = getPage(pageCounter, token, mode, targetUser)
             while (len(activities) == 0) :
-                activities = getPage(pageCounter, token)
-            pageCounter += 1
+                activities = getPage(pageCounter, token, mode, targetUser)
+            if mode == 0 :
+                pageCounter += 1
+            elif mode == 1:
+                pageCounter = 0 #becuse global activities refresh so fast page 1 becomes page 2 in the meanwhile, so just go on with page 0
 
-    with open('lastDate.txt', "w") as file:
-        file.write(str(startingEpoch))
+    if mode == 0 :
+        with open('lastDate.txt', "w") as file:
+            file.write(str(startingEpoch))
     
-    print(likes)
+    print("posted likes: " + str(likes))
+
+
+
+#POSSIBLY TO DELETE
+def callGlobal(token) :
+    import requests
+    uri = 'https://graphql.anilist.co'
+
+    headerzzPage = {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+
+    query = '''
+    query ( $isFollowing:Boolean = true, $hasReplies:Boolean = false, $activityType:ActivityType, $page:Int ) { 
+        Page ( page:$page, perPage:50 ) {
+            pageInfo { total perPage currentPage lastPage hasNextPage }
+            activities ( isFollowing:$isFollowing type:$activityType hasRepliesOrTypeText:$hasReplies type_in:[TEXT,ANIME_LIST,MANGA_LIST]sort:ID_DESC) {
+                ... on TextActivity{id userId type replyCount text isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge moderatorRoles avatar{large}}}
+                ... on ListActivity{id userId type status progress replyCount isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge avatar{large}}media{id type status isAdult title{userPreferred}bannerImage coverImage{large}}}
+            }
+        }
+    }
+    '''
+
+    variables = {
+        'page': 1, 
+        'type': 'global', 
+        'filter': 'all', 
+        'isFollowing': False, 
+        'hasReplies': True
+    }
+
+
+    pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
+    if pageResponse.status_code == 200:
+        print("Page response : ", pageResponse)
+    else :
+        print(pageResponse.text)
+    print(pageResponse.json())
 
 
 ############### MAIN -> ffs I don't like the __main__
 code = getAuthorizationCode()
 token = getAccessToken(code)
-postActivities(token)
+
+mode = input("Enter actovity mode:\n0-followed users;\n1-global users;\n2-target user\n\nSelected Mode: ")
+try :
+    mode = int(mode)
+except ValueError:
+    print("wrong input")
+
+targetUser = ""
+activateIteration = True
+if mode == 0:
+    print("Activating followed users mode")
+elif mode == 1:
+    print("Activating global users mode")
+elif mode == 2:
+    targetUser = input("Enter the targetted username: ")
+    print("Targetting user " + targetUser)
+else:
+    print("thanks for your participation")
+    activateIteration = False
+
+if activateIteration == True :
+    postActivities(token, mode, targetUser)
 print("My job is done!")
+
+
+#print("ACTUALLY: GLOBAL BOUT")
+#callGlobal(token)
 
 
 """

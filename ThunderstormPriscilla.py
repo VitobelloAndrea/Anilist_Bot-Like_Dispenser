@@ -5,7 +5,6 @@ client_ID = 000
 client_Secret = "xxx"
 
 
-
 import time
 import webbrowser
 
