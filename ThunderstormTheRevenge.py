@@ -15,6 +15,57 @@ def checkRateLimit(response) :
         time.sleep(60)
 
 
+##################### METHOD: GET USER ID - since the site only retrieves it after submitting the username
+# PARAMS: targetUser = username; token
+# RETURNS: userID if the username is found; 0 if the username is not found; -1 if other errors have occurred
+def getUserID(targetUser, token) :
+    import requests
+    uri = 'https://graphql.anilist.co'
+
+    headerzzPage = {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+
+    #step 1: get the user ID
+    query = '''
+    query ( $id:Int, $name:String ) { 
+        User(id:$id, name:$name ) { 
+            id name previousNames{name updatedAt} avatar{large}
+            bannerImage about isFollowing isFollower donatorTier 
+            donatorBadge createdAt moderatorRoles isBlocked bans 
+            options{profileColor restrictMessagesToFollowing}
+            mediaListOptions{scoreFormat}
+            statistics { 
+                anime{count meanScore standardDeviation minutesWatched episodesWatched genrePreview:genres(limit:10,sort:COUNT_DESC){genre count}}
+                manga{count meanScore standardDeviation chaptersRead volumesRead genrePreview:genres(limit:10,sort:COUNT_DESC){genre count}}
+            }
+            stats{activityHistory{date amount level}}
+            favourites { 
+                anime{edges{favouriteOrder node{id type status(version:2)format isAdult bannerImage title{userPreferred}coverImage{large}startDate{year}}}}
+                manga{edges{favouriteOrder node{id type status(version:2)format isAdult bannerImage title{userPreferred}coverImage{large}startDate{year}}}}
+                characters{edges{favouriteOrder node{id name{userPreferred}image{large}}}}staff{edges{favouriteOrder node{id name{userPreferred}image{large}}}}
+                studios{edges{favouriteOrder node{id name}}}
+            }
+        }
+    }'''
+
+    variables = {
+        'name': targetUser
+    }
+    
+    pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
+    if pageResponse.status_code == 200:
+        print("Page response : ", pageResponse)
+        return pageResponse.json()['data']['User']['id']
+    elif pageResponse.status_code == 404:
+        print("Page response : ", pageResponse)
+        return 0
+    else:
+        return -1
+
+
 ##################### METHOD: GETTING A PAGE (actually a post message)
 # PARAMETERS: getNumber, number of the page to be retrieved; token, necessary to identify the client
 # RETURNS: list of activities, 50 by default; empty list of the page retrieval was not successful
@@ -29,17 +80,35 @@ def getPage(pageNumber, token, mode, targetUser) :
         'Accept': 'application/json',
     }
 
-    query = '''
-    query($isFollowing:Boolean = true, $hasReplies:Boolean = false, $activityType:ActivityType, $page:Int ){
-        Page(page:$page, perPage:50 ){
-            pageInfo{total perPage currentPage lastPage hasNextPage}
-            activities(isFollowing:$isFollowing type:$activityType hasRepliesOrTypeText:$hasReplies type_in:[TEXT,ANIME_LIST,MANGA_LIST]sort:ID_DESC){
-                ... on TextActivity{id userId type replyCount text isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge moderatorRoles avatar{large}}}
-                ... on ListActivity{id userId type status progress replyCount isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge avatar{large}}media{id type status isAdult title{userPreferred}bannerImage coverImage{large}}}}
+    if mode == 0 or mode == 1 :
+        query = '''
+        query($isFollowing:Boolean = true, $hasReplies:Boolean = false, $activityType:ActivityType, $page:Int ){
+            Page(page:$page, perPage:50 ){
+                pageInfo{total perPage currentPage lastPage hasNextPage}
+                activities(isFollowing:$isFollowing type:$activityType hasRepliesOrTypeText:$hasReplies type_in:[TEXT,ANIME_LIST,MANGA_LIST]sort:ID_DESC){
+                    ... on TextActivity{id userId type replyCount text isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge moderatorRoles avatar{large}}}
+                    ... on ListActivity{id userId type status progress replyCount isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge avatar{large}}media{id type status isAdult title{userPreferred}bannerImage coverImage{large}}}}
+            }
         }
-    }
-    '''
-
+        '''
+    elif mode == 2 :
+        userID = getUserID(targetUser, token)
+        if (userID == -1) :
+            return []
+        elif (userID == 0 and pageNumber == 1) :
+            return [0]
+        query = '''
+        query ( $id:Int, $type:ActivityType, $page:Int ) {
+            Page( page:$page, perPage:50 ) { 
+                pageInfo{total perPage currentPage lastPage hasNextPage}
+                activities( userId:$id, type:$type, sort:[PINNED,ID_DESC] ) {
+                    ... on ListActivity{id type replyCount status progress isLocked isSubscribed isLiked isPinned likeCount createdAt user{id name avatar{large}}media{id type status(version:2)isAdult bannerImage title{userPreferred}coverImage{large}}}
+                    ... on TextActivity{id type text replyCount isLocked isSubscribed isLiked isPinned likeCount createdAt user{id name avatar{large}}}
+                    ... on MessageActivity{id type message replyCount isPrivate isLocked isSubscribed isLiked likeCount createdAt user:recipient{id}messenger{id name donatorTier donatorBadge moderatorRoles avatar{large}}}
+                }
+            }
+        }'''
+        
     #selecting variables depending on the mode the algorithm is running on
     if mode == 0: #mode = 0 -> default
         variables = {
@@ -56,8 +125,10 @@ def getPage(pageNumber, token, mode, targetUser) :
             'hasReplies': True
         }
     elif mode == 2: #mode = 2 -> target user
-        #TODO
-        print("todo todo todo")
+        variables = {
+            'id': userID, 
+            'page': pageNumber
+        }
 
     pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
     if pageResponse.status_code == 200:
@@ -76,6 +147,7 @@ def getPage(pageNumber, token, mode, targetUser) :
         return []
     else :
         return activities['data']['Page']['activities']
+
 
 
 ##################### METHOD: MAKE THE ACTIVITY POST REQUEST
@@ -141,7 +213,8 @@ def getAuthorizationCode() :
         if substring in urls[i][0] :
             code = urls[i][0].replace(substring, "")
             found = True
-    print(code)
+    #print(code)
+    print("Authorization Code obtained")
     return code
 
 
@@ -164,8 +237,9 @@ def getAccessToken(code) :
     }
 
     access_token = requests.post(url=uri, json=data, headers=headerz)
-    print(access_token)
-    print(access_token.json()["access_token"])
+    #print(access_token)
+    #print(access_token.json()["access_token"])
+    print("Token obtained\n")
     token = access_token.json()["access_token"]
 
     return token
@@ -188,25 +262,28 @@ def postActivities(token, mode, targetUser) :
         with open('lastDate.txt', 'r') as file: # extracting the activity epoch up to which the algorithm has run
             data = file.read().rstrip()
         epochToReach = int(data) # and converting it to integer
-    elif mode == 1 :
-        continueFlag = input("Enter the number of activities to like (max50): ") #MODE 1 variable
+    elif mode == 1 or mode == 2:
+        continueFlag = input("Enter the number of activities to like (max50): ") #MODE 1/2 variable
         try :
             continueFlag = int(continueFlag)
         except ValueError:
             print("wrong input")
             return
-        if continueFlag > 50: 
+        if continueFlag > 50 :
             continueFlag = 50
 
     activities = getPage(pageCounter, token, mode, targetUser)
-    while (len(activities) == 0) :
+    while (len(activities) == 0) : #when errors occur and I get a 0 len page, I try again
+        activities = getPage(pageCounter, token, mode, targetUser)
+    while (len(activities) == 1 and activities[0] == 0) : #(mode 2) when the targetUser is not valid I ask for another one
+        targetUser = input("The inserted username is not valid. Enter another one: ")
         activities = getPage(pageCounter, token, mode, targetUser)
     pageCounter += 1
 
     if mode == 0 :
         startingEpoch = activities[0].get('createdAt') #getting epoch of the most recent activity
     elif mode == 1:
-        pageCounter = 0
+        pageCounter = 1
 
     while (continueFlag and pageCounter < 100) :
         while (listCounter < len(activities) and continueFlag) :
@@ -219,7 +296,7 @@ def postActivities(token, mode, targetUser) :
                     if (successful) :
                         likeCounter += 1
                         likes += 1
-                        if mode == 1:
+                        if mode == 1 or mode == 2:
                             continueFlag -= 1
                     else : 
                         time.sleep(60)
@@ -233,10 +310,11 @@ def postActivities(token, mode, targetUser) :
             activities = getPage(pageCounter, token, mode, targetUser)
             while (len(activities) == 0) :
                 activities = getPage(pageCounter, token, mode, targetUser)
-            if mode == 0 :
+            if mode == 0 or mode == 2:
                 pageCounter += 1
             elif mode == 1:
-                pageCounter = 0 #becuse global activities refresh so fast page 1 becomes page 2 in the meanwhile, so just go on with page 0
+                pageCounter = 1 #becuse global activities refresh so fast page 1 becomes page 2 in the meanwhile, so just go on with page 0
+                time.sleep(15) #so I just wait 15 seconds and ask for the same first page again
 
     if mode == 0 :
         with open('lastDate.txt', "w") as file:
