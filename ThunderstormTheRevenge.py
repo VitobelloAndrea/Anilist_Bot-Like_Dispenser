@@ -1,8 +1,12 @@
-# API client
-client_name = "xxx"
-client_redirectURL = "xxx"
-client_ID = 000
-client_Secret = "xxx"
+import json
+client = open("client.json")
+variables = json.load(client)
+
+client_name = variables["client_name"]
+client_redirectURL = variables["client_redirectURL"]
+client_ID = int(variables["client_ID"])
+client_Secret = variables["client_Secret"]
+
 
 
 ##################### METHOD: CHECK LIMIT RATE - if the number of remaining requests is equal to 1 or less, than wait 60 seconds
@@ -18,7 +22,7 @@ def checkRateLimit(response) :
 ##################### METHOD: GET USER ID - since the site only retrieves it after submitting the username
 # PARAMS: targetUser = username; token
 # RETURNS: userID if the username is found; 0 if the username is not found; -1 if other errors have occurred
-def getUserID(targetUser, token) :
+def getUserID(targetUser, token, toFollow=False) :
     import requests
     uri = 'https://graphql.anilist.co'
 
@@ -54,16 +58,21 @@ def getUserID(targetUser, token) :
     variables = {
         'name': targetUser
     }
-    
+            
     pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
     if pageResponse.status_code == 200:
         print("Page response : ", pageResponse)
-        return pageResponse.json()['data']['User']['id']
+        userID = pageResponse.json()['data']['User']['id']
+        isFollowing = pageResponse.json()['data']['User']['isFollowing']
     elif pageResponse.status_code == 404:
         print("Page response : ", pageResponse)
-        return 0
+        userID = 0
     else:
-        return -1
+        userID = -1
+
+    if toFollow:
+        return (userID, isFollowing)
+    return userID
 
 
 ##################### METHOD: GETTING A PAGE (actually a post message)
@@ -124,7 +133,7 @@ def getPage(pageNumber, token, mode, targetUser) :
             'isFollowing': False, 
             'hasReplies': True
         }
-    elif mode == 2: #mode = 2 -> target user
+    elif mode == 2 : #mode = 2 -> target user
         variables = {
             'id': userID, 
             'page': pageNumber
@@ -149,10 +158,13 @@ def getPage(pageNumber, token, mode, targetUser) :
         return activities['data']['Page']['activities']
 
 
-
 ##################### METHOD: MAKE THE ACTIVITY POST REQUEST
 # PARAMETERS: activityNumber, which uniquely identifies the activity, and the token code, necessary for the post request to be identified
 # RETURN: True if the post is successful; False if the post is unsuccessful
+# mode: tells the operation mode;
+# mode = 0 -> followed list mode; likes are posted until a certain time epoch is reached.
+# mode = 1 -> global list mode; a predetermined quantity of likes is posted.
+# mode = 1 -> a predetermined quantity of likes is posted to a certain user.
 def postLike(activityNumber, token) :
     import requests
     uri = 'https://graphql.anilist.co'
@@ -185,11 +197,12 @@ def postLike(activityNumber, token) :
     
     #Rate limiting check!
     checkRateLimit(response)
-    if response.status_code == 200 or response.status_code == 404: #if everything was alright or the activity was deleted
+    if response.status_code == 200 or response.status_code == 404 or response.status_code == 400 and "This user cannot currently receive likes" in response.text: #if everything was alright or the activity was deleted
         print("response : ", response)
         return True
     else :
         print(response.text)
+        print(response)
         return False
     #just to check: webbrowser.open_new_tab("https://anilist.co/activity/" + str(activityNumber))
 
@@ -245,17 +258,17 @@ def getAccessToken(code) :
     return token
 
 
-############### METHOD: TIME TO ITERATE!
-# mode: tells the operation mode;
-# mode = 0 -> followed list mode; likes are posted until a certain time epoch is reached.
-# mode = 1 -> global list mode; a predetermined quantity of likes is posted.
-# mode = 1 -> a predetermined quantity of likes is posted to a certain user.
+"""DEPRECATED, SOON TO BE DELETED"""
 def postActivities(token, mode, targetUser) :
     import time
     pageCounter = 1
     likeCounter = 0 #count how many likes; maximum of 30 before 1minute time out
     listCounter = 0 #count the activity of the list that was reached (0 up to 49)
     likes = 0
+    
+    if mode == 3 :
+        mode = 2
+        userToFollow = targetUser
 
     if mode == 0 :
         continueFlag = True #MODE 0 variable necessary to determine for how long to continue
@@ -310,7 +323,7 @@ def postActivities(token, mode, targetUser) :
             activities = getPage(pageCounter, token, mode, targetUser)
             while (len(activities) == 0) :
                 activities = getPage(pageCounter, token, mode, targetUser)
-            if mode == 0 or mode == 2:
+            if mode == 1 or mode == 2:
                 pageCounter += 1
             elif mode == 1:
                 pageCounter = 1 #becuse global activities refresh so fast page 1 becomes page 2 in the meanwhile, so just go on with page 0
@@ -322,9 +335,12 @@ def postActivities(token, mode, targetUser) :
     
     print("posted likes: " + str(likes))
 
+    if userToFollow :
+        #TODO: IMPLEMENT followUser method
+        if 1==1:
+            print(True)
 
-
-#POSSIBLY TO DELETE
+"""DEPRECATED, SOON TO BE DELETED"""
 def callGlobal(token) :
     import requests
     uri = 'https://graphql.anilist.co'
@@ -364,36 +380,304 @@ def callGlobal(token) :
     print(pageResponse.json())
 
 
+##################### METHOD: ITERATION ON FOLLOWED FEED
+def postFeed(token) :
+    blacklistFile = open("blacklist.txt", "r") #open file in read mode
+    blacklist = blacklistFile.readline() #and read in as a whole string
+    blacklistFile.close()
+    blacklist = blacklist.split(",") #split it in strings
+    del blacklist[-1] #remove the last ""
+    blacklist = [int(id) for id in blacklist] #and converte all to ints, so that comparisons are faster
+    blackset = set(blacklist) #then turn the list into a set for more efficiency
+    print(blackset)
+
+    import time
+    pageCounter = 1
+    likeCounter = 0 #count how many likes; maximum of 30 before 1minute time out
+    listCounter = 0 #count the activity of the list that was reached (0 up to 49)
+    likes = 0
+
+    continueFlag = True #variable necessary to determine for how long to continue
+    with open('lastDate.txt', 'r') as file: # extracting the activity epoch up to which the algorithm has run
+        data = file.read().rstrip()
+    epochToReach = int(data) # and converting it to integer
+
+    activities = getPage(pageCounter, token, mode=0, targetUser=None)
+    while (len(activities) == 0) : #when errors occur and I get a 0 len page, I try again
+        activities = getPage(pageCounter, token, mode=0, targetUser=None)
+    pageCounter += 1
+
+    startingEpoch = activities[0].get('createdAt') #getting epoch of the most recent activity
+
+    while (continueFlag and pageCounter < 100) :
+        while (listCounter < len(activities) and continueFlag) :
+            activity = activities[listCounter]
+            if (activity.get('createdAt') < epochToReach) :
+                continueFlag = False
+            elif (likeCounter < 30) :
+                if (not(activity.get('isLiked')) and not activity.get('userId') in blackset) :
+                    successful = postLike(int(activity.get('id')), token)
+                    if (successful) :
+                        likeCounter += 1
+                        likes += 1
+                    else : 
+                        time.sleep(60)
+                        listCounter -= 1
+                listCounter += 1
+            else :
+                time.sleep(60)
+                likeCounter = 0
+        if (continueFlag) : 
+            listCounter = 0
+            activities = getPage(pageCounter, token, mode=0, targetUser=None)
+            while (len(activities) == 0) :
+                activities = getPage(pageCounter, token, mode=0, targetUser=None)
+
+    with open('lastDate.txt', "w") as file:
+        file.write(str(startingEpoch))
+    
+    print("posted likes: " + str(likes))
+
+
+##################### METHOD: ITERATION ON GLOBAL FEED
+def postGlobal(token) :
+    import time
+    pageCounter = 1
+    likeCounter = 0 #count how many likes; maximum of 30 before 1minute time out
+    listCounter = 0 #count the activity of the list that was reached (0 up to 49)
+    likes = 0
+
+    continueFlag = input("Enter the number of activities to like (max50): ")
+    try :
+        continueFlag = int(continueFlag)
+    except ValueError:
+        print("wrong input")
+        return
+    if continueFlag > 50 :
+        continueFlag = 50
+
+    activities = getPage(pageCounter, token, mode=1, targetUser=None)
+    while (len(activities) == 0) : #when errors occur and I get a 0 len page, I try again
+        activities = getPage(pageCounter, token, mode=1, targetUser=None)
+
+    while (continueFlag and pageCounter < 100) :
+        while (listCounter < len(activities) and continueFlag) :
+            activity = activities[listCounter]
+            if (likeCounter < 30) :
+                if (not(activity.get('isLiked'))) :
+                    successful = postLike(int(activity.get('id')), token)
+                    if (successful) :
+                        likeCounter += 1
+                        likes += 1
+                        continueFlag -= 1
+                    else : 
+                        time.sleep(60)
+                        listCounter -= 1
+                listCounter += 1
+            else :
+                time.sleep(60)
+                likeCounter = 0
+        if (continueFlag) : 
+            listCounter = 0
+            activities = getPage(pageCounter, token, mode=1, targetUser=None)
+            while (len(activities) == 0) :
+                activities = getPage(pageCounter, token, mode=1, targetUser=None)
+            time.sleep(15) #so I just wait 15 seconds and ask for the same first page again
+    
+    print("posted likes: " + str(likes))
+
+
+##################### METHOD: ITERATION ON USER
+def postUser(token, targetUser) :
+    import time
+    pageCounter = 1
+    likeCounter = 0 #count how many likes; maximum of 30 before 1minute time out
+    listCounter = 0 #count the activity of the list that was reached (0 up to 49)
+    likes = 0
+
+    continueFlag = input("Enter the number of activities to like (max50): ") #MODE 1/2 variable
+    try :
+        continueFlag = int(continueFlag)
+    except ValueError:
+        print("wrong input")
+        return
+    if continueFlag > 50 :
+        continueFlag = 50
+
+    activities = getPage(pageCounter, token, mode=2, targetUser=targetUser)
+    while (len(activities) == 0) : #when errors occur and I get a 0 len page, I try again
+        activities = getPage(pageCounter, token, mode=2, targetUser=targetUser)
+    while (len(activities) == 1 and activities[0] == 0) : #(mode 2) when the targetUser is not valid I ask for another one
+        targetUser = input("The inserted username is not valid. Enter another one: ")
+        activities = getPage(pageCounter, token, mode=2, targetUser=targetUser)
+    pageCounter += 1
+
+    while (continueFlag and pageCounter < 100) :
+        while (listCounter < len(activities) and continueFlag) :
+            activity = activities[listCounter]
+            if (likeCounter < 30) :
+                if (not(activity.get('isLiked'))) :
+                    successful = postLike(int(activity.get('id')), token)
+                    if (successful) :
+                        likeCounter += 1
+                        likes += 1
+                        continueFlag -= 1
+                    else : 
+                        time.sleep(60)
+                        listCounter -= 1
+                listCounter += 1
+            else :
+                time.sleep(60)
+                likeCounter = 0
+        if (continueFlag) : 
+            listCounter = 0
+            activities = getPage(pageCounter, token, mode=2, targetUser=targetUser)
+            while (len(activities) == 0) :
+                activities = getPage(pageCounter, token, mode=2, targetUser=targetUser)
+            pageCounter += 1
+    
+    print("posted likes: " + str(likes))
+
+
+##################### METHOD: FOLLOW USER
+def followUser(token, targetUser):
+    userID = getUserID(targetUser, token, toFollow=True)
+    while userID[0] == 0 or userID[0] == -1 :
+        if (userID[0] == 0) :
+            userID = getUserID(targetUser, token, toFollow=True)
+        if (userID[0] == -1) :
+            targetUser = input("The inserted username is not valid. Enter another one: ")
+            userID = getUserID(targetUser, token, toFollow=True)
+
+    if userID[1]:
+        return True
+
+    import requests
+    uri = 'https://graphql.anilist.co'
+
+    headerzzPage = {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+    
+    query = '''mutation($id:Int){ToggleFollow(userId:$id){id name isFollowing}}'''
+
+    variables = {
+            'id': userID[0]
+    }
+
+    pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
+    if pageResponse.status_code == 200:
+        print("Page response : ", pageResponse)
+        print("\n")
+    else :
+        print(pageResponse.text)
+        return False
+    print(pageResponse.json())
+
+
+##################### METHOD: BLACKLIST USER
+def blacklistUser(token, targetUser):
+    userID = getUserID(targetUser, token)
+    while userID == 0 or userID == -1 :
+        if (userID == 0) :
+            userID = getUserID(targetUser, token)
+        if (userID == -1) :
+            targetUser = input("The inserted username is not valid. Enter another one: ")
+            userID = getUserID(targetUser, token)
+    userID = str(userID) + ','
+
+    blacklistFile = open("blacklist.txt", "a")
+    blacklistFile.write(userID)
+    blacklistFile.close()
+
+
+
+##################### METHOD: BLACKLIST USER
+def whitelistUser(token, targetUser):
+    userID = getUserID(targetUser, token)
+    while userID == 0 or userID == -1 :
+        if (userID == 0) :
+            userID = getUserID(targetUser, token)
+        if (userID == -1) :
+            targetUser = input("The inserted username is not valid. Enter another one: ")
+            userID = getUserID(targetUser, token)
+    userID = str(userID) + ','
+
+    blacklistFile = open("blacklist.txt", "r")
+    blacklist = blacklistFile.read()
+    blacklistFile.close()
+    newblacklist = blacklist.replace(userID, "")
+    if newblacklist != blacklist :
+        blacklistFile = open("blacklist.txt", "w")
+        blacklistFile.write(newblacklist)
+        blacklistFile.close()
+
+
+
+
 ############### MAIN -> ffs I don't like the __main__
-code = getAuthorizationCode()
-token = getAccessToken(code)
+def main():
+    code = getAuthorizationCode()
+    token = getAccessToken(code)
 
-mode = input("Enter actovity mode:\n0-followed users;\n1-global users;\n2-target user\n\nSelected Mode: ")
-try :
-    mode = int(mode)
-except ValueError:
-    print("wrong input")
+    presentation = """
+            Enter activity mode:
+                0-Followed users;
+                1-Global users;
+                2-Target user;
+                3-Target & follow;
+                4-Blacklist User;
+                5-Whitelist User;
+                Else-end.
+            Selected Mode:\n\n"""
 
-targetUser = ""
-activateIteration = True
-if mode == 0:
-    print("Activating followed users mode")
-elif mode == 1:
-    print("Activating global users mode")
-elif mode == 2:
-    targetUser = input("Enter the targetted username: ")
-    print("Targetting user " + targetUser)
-else:
-    print("thanks for your participation")
-    activateIteration = False
+    mode = 0
+    while mode >= 0 and mode <= 5 :
+        mode = input(presentation)
+        try :
+            mode = int(mode)
+        except ValueError:
+            print("wrong input")
 
-if activateIteration == True :
-    postActivities(token, mode, targetUser)
-print("My job is done!")
+        targetUser = ""
+
+        if mode == 0:
+            print("Activating followed users mode")
+            postFeed(token)
+
+        elif mode == 1:
+            print("Activating global users mode")
+            postGlobal(token)
+
+        elif mode == 2 or mode == 3:
+            targetUser = input("Enter the targetted username: ")
+            print("Targetting user " + targetUser)
+            postUser(token, targetUser)
+            if mode == 3:
+                while not followUser(token, targetUser):
+                    pass
+
+        elif mode == 4:
+            targetUser = input("Enter the user to blacklist: ")
+            print("Blacklisting user " + targetUser)
+            blacklistUser(token, targetUser)
+
+        elif mode == 5:
+            targetUser = input("Enter the user to whitelist: ")
+            print("Whitelisting user " + targetUser)
+            whitelistUser(token, targetUser)
+
+        else:
+            print("thanks for your participation")
+
+        print("My job is done!")
 
 
-#print("ACTUALLY: GLOBAL BOUT")
-#callGlobal(token)
+
+if __name__ == "__main__":
+    main()
 
 
 """
