@@ -13,7 +13,7 @@ client_Secret = variables["client_Secret"]
 # to avoid incurring in any penalities (https://anilist.gitbook.io/anilist-apiv2-docs/overview/rate-limiting)
 # PARAMETERS: response - response to a message that includes the rate limit fields among the headers
 def checkRateLimit(response) :
-    if int(response.headers["X-RateLimit-Remaining"]) <= 1 :
+    if "x-ratelimit-remaining" in response.headers and int(response.headers["x-ratelimit-remaining"]) <= 1 :
         import time
         print("oh shit, taking a pause cause I've almost finished the requests for this minute")
         time.sleep(60)
@@ -307,10 +307,12 @@ def postActivities(token, mode, targetUser) :
                         if mode == 1 or mode == 2:
                             continueFlag -= 1
                     else : 
+                        print("Unsuccessful message -> taking a pause")
                         time.sleep(60)
                         listCounter -= 1
                 listCounter += 1
             else :
+                print("Reached 30 like requests -> taking a pause")
                 time.sleep(60)
                 likeCounter = 0
         if (continueFlag) : 
@@ -416,11 +418,13 @@ def postFeed(token) :
                         likeCounter += 1
                         likes += 1
                     else : 
+                        print("Unsuccessful message -> taking a pause")
                         time.sleep(60)
                         likeCounter = 0 ########### IF THERE IS A MISTAKE IT'S HERE
                         listCounter -= 1
                 listCounter += 1
             else :
+                print("Reached 30 like requests -> taking a pause")
                 time.sleep(60)
                 likeCounter = 0
         if (continueFlag) : 
@@ -468,11 +472,13 @@ def postGlobal(token) :
                         likes += 1
                         continueFlag -= 1
                     else : 
+                        print("Unsuccessful message -> taking a pause")
                         time.sleep(60)
                         likeCounter = 0 ########### IF THERE IS A MISTAKE IT'S HERE
                         listCounter -= 1
                 listCounter += 1
             else :
+                print("Reached 30 like requests -> taking a pause")
                 time.sleep(60)
                 likeCounter = 0
         if (continueFlag) : 
@@ -526,11 +532,13 @@ def postUser(token, targetUser) :
                         likes += 1
                         continueFlag -= 1
                     else : 
+                        print("Unsuccessful message -> taking a pause")
                         time.sleep(60)
                         likeCounter = 0 ########### IF THERE IS A MISTAKE IT'S HERE
                         listCounter -= 1
                 listCounter += 1
             else :
+                print("Reached 30 like requests -> taking a pause")
                 time.sleep(60)
                 likeCounter = 0
         if (continueFlag) : 
