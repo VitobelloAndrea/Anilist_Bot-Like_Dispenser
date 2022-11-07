@@ -5,6 +5,7 @@ import sqlite3
 
 client = open("client.json")
 variables = json.load(client)
+client.close() #if there is a mistake, here! delete this!
 
 client_name = variables["client_name"]
 client_redirectURL = variables["client_redirectURL"]
@@ -92,6 +93,7 @@ def getUserID(targetUser, token, toFollow=False) :
 # mode = 0 -> followed list mode; likes are posted until a certain time epoch is reached.
 # mode = 1 -> global list mode; a predetermined quantity of likes is posted.
 # mode = 2 -> a predetermined quantity of likes is posted to a certain user.
+# mode = 3 -> getting notifications
 def getPage(pageNumber, token, mode, userID) :
     uri = 'https://graphql.anilist.co'
 
@@ -101,7 +103,8 @@ def getPage(pageNumber, token, mode, userID) :
         'Accept': 'application/json',
     }
 
-    if mode == 0 or mode == 1 :
+    #selecting query and variable depending on the mode
+    if mode == 0 : #mode 0 -> feed
         query = '''
         query($isFollowing:Boolean = true, $hasReplies:Boolean = false, $activityType:ActivityType, $page:Int ){
             Page(page:$page, perPage:50 ){
@@ -112,7 +115,32 @@ def getPage(pageNumber, token, mode, userID) :
             }
         }
         '''
-    elif mode == 2 :
+        variables = {
+            'page': pageNumber, 
+            'type': "following", 
+            'filter': "all"
+        }
+
+    elif mode == 1 : #mode 1 -> global feed
+        query = '''
+        query($isFollowing:Boolean = true, $hasReplies:Boolean = false, $activityType:ActivityType, $page:Int ){
+            Page(page:$page, perPage:50 ){
+                pageInfo{total perPage currentPage lastPage hasNextPage}
+                activities(isFollowing:$isFollowing type:$activityType hasRepliesOrTypeText:$hasReplies type_in:[TEXT,ANIME_LIST,MANGA_LIST]sort:ID_DESC){
+                    ... on TextActivity{id userId type replyCount text isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge moderatorRoles avatar{large}}}
+                    ... on ListActivity{id userId type status progress replyCount isLocked isSubscribed isLiked likeCount createdAt user{id name donatorTier donatorBadge avatar{large}}media{id type status isAdult title{userPreferred}bannerImage coverImage{large}}}}
+            }
+        }
+        '''
+        variables = {
+            'page': 1, 
+            'type': 'global', 
+            'filter': 'all', 
+            'isFollowing': False, 
+            'hasReplies': True
+        }
+
+    elif mode == 2 : #mode 2 -> followed user
         query = '''
         query ( $id:Int, $type:ActivityType, $page:Int ) {
             Page( page:$page, perPage:50 ) { 
@@ -124,26 +152,27 @@ def getPage(pageNumber, token, mode, userID) :
                 }
             }
         }'''
-        
-    #selecting variables depending on the mode the algorithm is running on
-    if mode == 0: #mode = 0 -> default
-        variables = {
-            'page': pageNumber, 
-            'type': "following", 
-            'filter': "all"
-        }
-    elif mode == 1: #mode = 1 -> global
-        variables = {
-            'page': 1, 
-            'type': 'global', 
-            'filter': 'all', 
-            'isFollowing': False, 
-            'hasReplies': True
-        }
-    elif mode == 2 : #mode = 2 -> target user
         variables = {
             'id': userID, 
             'page': pageNumber
+        }
+
+    elif mode == 3 : #mode 3 -> getting notifications
+        #Here I removed some lines to try and make the request less expensive
+        query = '''query($page:Int,$types:[NotificationType]){
+            Page(page:$page,perPage:50){
+                pageInfo{total perPage currentPage lastPage hasNextPage}
+                notifications(type_in:$types,resetNotificationCount:true){
+                    ... on ActivityMentionNotification{id type context activityId user{id name}createdAt}
+                    ... on ActivityLikeNotification{id type context activityId user{id name}createdAt}
+                }
+            }
+        }'''
+
+        variables = {
+            'page': pageNumber, 
+            'feed': "activity", 
+            'types': ["ACTIVITY_MENTION", "ACTIVITY_LIKE"]
         }
 
     pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
@@ -171,7 +200,10 @@ def getPage(pageNumber, token, mode, userID) :
     """
     #now since all pages have status code 200 I can delete all that commented shit above, right?
     activities = pageResponse.json()
-    return activities['data']['Page']['activities']
+    if mode != 3 :
+        return activities['data']['Page']['activities'], activities['data']['Page']['pageInfo']['hasNextPage']
+    elif mode == 3 :
+        return activities['data']['Page']['notifications'], activities['data']['Page']['pageInfo']['hasNextPage']
 
 
 ##################### METHOD: MAKE THE ACTIVITY POST REQUEST
@@ -221,12 +253,8 @@ def postLike(activityNumber, token) :
 def getAuthorizationCode() :
     con = sqlite3.connect('C:\\Users\\andre\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\History')
     cursor = con.cursor()
-    cursor.execute("SELECT url FROM urls ORDER BY last_visit_time DESC LIMIT 10")
+    cursor.execute("SELECT url FROM urls ORDER BY last_visit_time DESC LIMIT 30")
     urls = cursor.fetchall()
-    #print to check
-    #for i in range(0, len(urls)) :
-    #    print(urls[i])
-    #    print()
 
     found = False
     i = 0
@@ -258,8 +286,6 @@ def getAccessToken(code) :
     }
 
     access_token = requests.post(url=uri, json=data, headers=headerz)
-    #print(access_token)
-    #print(access_token.json()["access_token"])
     print("Token obtained\n")
     token = access_token.json()["access_token"]
 
@@ -287,12 +313,12 @@ def postFeed(token) :
         data = file.read().rstrip()
     epochToReach = int(data) # and converting it to integer
 
-    activities = getPage(pageCounter, token, mode=0, userID=None)
+    activities, hasNextPage = getPage(pageCounter, token, mode=0, userID=None)
     pageCounter += 1
 
     startingEpoch = activities[0].get('createdAt') #getting epoch of the most recent activity
 
-    while (continueFlag and pageCounter < 100) :
+    while (continueFlag and hasNextPage) :
         while (listCounter < len(activities) and continueFlag) :
             activity = activities[listCounter]
             if (activity.get('createdAt') < epochToReach) :
@@ -315,7 +341,7 @@ def postFeed(token) :
                 likeCounter = 0
         if (continueFlag) : 
             listCounter = 0
-            activities = getPage(pageCounter, token, mode=0, userID=None)
+            activities, hasNextPage = getPage(pageCounter, token, mode=0, userID=None)
             pageCounter += 1
 
     with open('lastDate.txt', "w") as file:
@@ -340,9 +366,9 @@ def postGlobal(token) :
     if continueFlag > 50 :
         continueFlag = 50
 
-    activities = getPage(pageCounter, token, mode=1, userID=None)
+    activities, hasNextPage = getPage(pageCounter, token, mode=1, userID=None)
 
-    while (continueFlag and pageCounter < 100) :
+    while (continueFlag and hasNextPage) :
         while (listCounter < len(activities) and continueFlag) :
             activity = activities[listCounter]
             if (likeCounter < 30) :
@@ -364,7 +390,7 @@ def postGlobal(token) :
                 likeCounter = 0
         if (continueFlag) : 
             listCounter = 0
-            activities = getPage(pageCounter, token, mode=1, userID=None)
+            activities, hasNextPage = getPage(pageCounter, token, mode=1, userID=None)
             time.sleep(15) #so I just wait 15 seconds and ask for the same first page again
     
     print("posted likes: " + str(likes))
@@ -388,10 +414,10 @@ def postUser(token, targetUser) :
 
     userID = getUserID(targetUser, token)
 
-    activities = getPage(pageCounter, token, mode=2, userID=userID)
+    activities, hasNextPage = getPage(pageCounter, token, mode=2, userID=userID)
     pageCounter += 1
 
-    while (continueFlag and pageCounter < 100) :
+    while (continueFlag and hasNextPage) :
         while (listCounter < len(activities) and continueFlag) :
             activity = activities[listCounter]
             if (likeCounter < 30) :
@@ -413,7 +439,7 @@ def postUser(token, targetUser) :
                 likeCounter = 0
         if (continueFlag) : 
             listCounter = 0
-            activities = getPage(pageCounter, token, mode=2, userID=userID)
+            activities, hasNextPage = getPage(pageCounter, token, mode=2, userID=userID)
             pageCounter += 1
     
     print("posted likes: " + str(likes))
@@ -423,8 +449,8 @@ def postUser(token, targetUser) :
 def followUser(token, targetUser):
     userID = getUserID(targetUser, token, toFollow=True)
 
-    if userID[1]:
-        return True
+    if userID[1]: #the user is already followed, so we can go back to the main
+        return
 
     uri = 'https://graphql.anilist.co'
 
@@ -441,12 +467,15 @@ def followUser(token, targetUser):
     }
 
     pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
-    if pageResponse.status_code == 200:
-        print("Page response : ", pageResponse)
-        print("\n")
-    else :
+    while pageResponse.status_code != 200:
         print(pageResponse.text)
-        return False
+        if pageResponse.status_code == 429:
+            print("Too many requests - followUser taking a nap")
+            time.sleep(60)
+        pageResponse = requests.post(uri, json={'query': query, 'variables': variables}, headers=headerzzPage)
+    
+    #at this point pageResponse.status_code is 200
+    print("Page response : ", pageResponse)
     print(pageResponse.json())
 
 
@@ -551,10 +580,10 @@ def nukeUser(token, targetUser):
     #the continueFlag is thus set False each time a new page is retrieved and set to True whever the first like is found in a page
     continueFlag = True
 
-    activities = getPage(pageCounter, token, mode=2, userID=userID)
+    activities, hasNextPage = getPage(pageCounter, token, mode=2, userID=userID)
     pageCounter += 1
 
-    while (continueFlag and pageCounter < 100) :
+    while (continueFlag and hasNextPage) :
         continueFlag = False #setup continueFlag to false
         while (listCounter < len(activities)) :
             activity = activities[listCounter]
@@ -575,10 +604,109 @@ def nukeUser(token, targetUser):
                 likeCounter = 0
         if (continueFlag) : 
             listCounter = 0
-            activities = getPage(pageCounter, token, mode=2, userID=userID)
+            activities, hasNextPage = getPage(pageCounter, token, mode=2, userID=userID)
             pageCounter += 1
     
     print("posted un-likes: " + str(un_likes))
+
+
+##################### METHOD: FOLLOW SPREE FROM USER'S FOLLOWING LIST
+# Objective: 
+# 1. follow all users from someone's following list
+# 2. add all those users to a greylist with a timestamp
+# 3. check after a week against the activities received analytics
+# TODO -> it will be easier to solve this with already the analytics
+def followSpree(token, targetUser):
+    userID = getUserID(targetUser, token)
+    pageNumber = 1
+    pass
+
+    #to implement separately: getting a batch of users
+    #alternative to avoid making a new function, make it an iteration
+    #->ask for new pages as long as "hasnext", and concatenate users
+    headerzzPage = {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+
+    pageQuery = '''
+    query( $id:Int!, $page:Int ){
+        Page( page:$page ){
+            pageInfo{total perPage currentPage lastPage hasNextPage}
+            following(userId:$id,sort:USERNAME){id name}
+        }
+    }'''
+
+    variables = {
+        'id': userID, 
+        'type': "following", 
+        'page': pageNumber
+    }
+    #remember to ask for new pages until "hasnext" becomes false
+
+    #then: this will be computationally expensive
+    #for all users in the list, perform
+    #0. if the user is not followed
+    #1. postUser with a random number of likes between 10 and 15
+    #2. followUser
+    #3. add the user to the greylist
+
+    #TODO: add a function "updateGreyList" so that
+    #1. for all users in the greyList
+    #2. check if elapsed time is greater than 4 days
+    #3. if so, check if the user has posted likes and followed back
+    #4. if so, remove the user from the greyList
+    #5. if not, remove the user from the greylist, unfollow and nuke it
+    pass
+
+
+##################### METHOD: 
+#TODO
+def updateAnalytics(token):
+    with open('notificationLastDate.txt', 'r') as file: # epoch of last activity stored
+        data = file.read().rstrip()
+    epochToReach = int(data) # and converting it to integer
+
+    notifications = open("notifications.json")
+    receivedNotifications = json.load(notifications) #receivedNotifications is a dictionary
+    notifications.close() #if there is a mistake, here! delete this!
+
+    activities, hasNextPage = getPage(pageNumber=1, token=token, mode=3, userID=None)
+    pageCounter = 2
+    startingEpoch = activities[0]['createdAt'] #getting epoch of the most recent activity
+
+    continueFlag = True #variable necessary to determine for how long to continue (check if the current activity has been seen already)
+    listCounter = 0
+    notificationCounter = 0
+    while (continueFlag and hasNextPage) :
+        while (listCounter < len(activities) and continueFlag) :
+            activity = activities[listCounter]
+            if (activity['createdAt'] <= epochToReach) :
+                continueFlag = False
+            else :
+                if activity['user']['id'] not in receivedNotifications : #if userID not in the json, add a dictionary for that
+                    receivedNotifications[activity['user']['id']] = {"username":activity['user']['name'], "likes":[], "mentions":[]}
+                if activity['type'] == 'ACTIVITY_LIKE' :
+                    receivedNotifications[activity['user']['id']]['likes'].append(activity['createdAt'])
+                else :
+                    receivedNotifications[activity['user']['id']]['mentions'].append(activity['createdAt'])
+                notificationCounter += 1
+                listCounter += 1
+        if (continueFlag) :
+            listCounter = 0
+            activities, hasNextPage = getPage(pageCounter, token=token, mode=3, userID=None)
+            pageCounter += 1
+
+    with open('notificationLastDate.txt', "w") as file:
+        file.write(str(startingEpoch))
+
+    with open('notifications.json', 'w') as file:
+        json.dump(receivedNotifications, file)
+
+    print("Recorded notifications: " + str(notificationCounter))
+
+
 
 
 ############### MAIN -> ffs I don't like the __main__
@@ -596,11 +724,13 @@ def main():
                 5-Whitelist User;
                 6-Get Blacklisted Users;
                 7-Nuke user;
+                8-Follow spree from user following list;
+                9-Update analytics;
                 999-End.\n
             Selected Mode:"""
 
     mode = 0
-    while mode >= 0 and mode <= 7 :
+    while mode >= 0 and mode <= 9 :
         mode = input(presentation)
         try :
             mode = int(mode)
@@ -622,8 +752,7 @@ def main():
             print("Targetting user " + targetUser)
             postUser(token, targetUser)
             if mode == 3:
-                while not followUser(token, targetUser):
-                    pass
+                followUser(token, targetUser)
 
         elif mode == 4:
             targetUser = input("Enter the user to blacklist: ")
@@ -642,6 +771,14 @@ def main():
             targetUser = input("Enter the user to nuke: ")
             print("Nuking user " + targetUser)
             nukeUser(token, targetUser)
+
+        elif mode == 8:
+            targetUser = input("Enter the vector user: ")
+            print("Following user " + targetUser + "'s following list")
+            followSpree(token, targetUser)
+
+        elif mode == 9:
+            updateAnalytics(token)
 
         elif mode == 999:
             print("thanks for your participation")
